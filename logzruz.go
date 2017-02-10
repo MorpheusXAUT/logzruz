@@ -14,12 +14,22 @@ import (
 )
 
 const (
-	Version                = "1.0.0"
-	DefaultUserAgent       = "logzruz v" + Version + " - github.com/MorpheusXAUT/logzruz"
+	// Version of the logzruz library
+	Version = "1.0.0"
+	// DefaultBufferCount defines the default number of messages to buffer before flushing logs
+	DefaultBufferCount = 10
+	// DefaultBufferInterval defines the default interval to check for messages to flush if not explicitly specified
+	DefaultBufferInterval = time.Second * 10
+	// DefaultForceFlushField to use for triggering a buffer flush forcefully if not explicitly specified
 	DefaultForceFlushField = "logzruzForceFlush"
-	LogzioDefaultURL       = "https://listener.logz.io:8071/"
+	// DefaultUserAgent to use for HTTP requests if not explicitly specified
+	DefaultUserAgent = "logzruz v" + Version + " - github.com/MorpheusXAUT/logzruz"
+	// LogzioDefaultURL specifies the default URL of the logz.io service to use
+	LogzioDefaultURL = "https://listener.logz.io:8071/"
 )
 
+// Hook represents a logrus hook for shipping logs to logz.io services.
+// Messages are buffered until a user-defined limit has been reached or sent on a regular interval.
 type Hook struct {
 	buffer       [][]byte
 	bufferTicker *time.Ticker
@@ -29,26 +39,45 @@ type Hook struct {
 	stop         chan bool
 }
 
+// HookOptions contains all options and settings required to configure the hook.
+// Applications only need to provide a Token, although the other options can be used to further modify the library's behaviour.
+// If not provided, some options will be configured using defaults.
 type HookOptions struct {
-	App             string
-	BufferCount     int
-	BufferInterval  time.Duration
-	Client          *http.Client
-	Context         logrus.Fields
+	// App "name" to specify as a type for logz.io requests
+	App string
+	// BufferCount specifies the number of messages to buffer before flushing it (if not triggered by timed triggers before). Setting this value to -1 will disable buffering and instantly send messages (default 10)
+	BufferCount int
+	// BufferInterval specifies the duration to wait between each check for new buffered messages to send (default 10s)
+	BufferInterval time.Duration
+	// Client specifies the HTTP client to use for sending logs to the HTTPS log servers
+	Client *http.Client
+	// Context will be added to every log message
+	Context logrus.Fields
+	// ForceFlushField specifies the name of the log field triggering a force flush if present (default "logzruzForceFlush")
 	ForceFlushField string
+	// ForceFlushLevel allows for log messages higher than the level specified to be flushed instantly (default "fatal")
 	ForceFlushLevel logrus.Level
-	Token           string
-	URL             string
-	UserAgent       string
+	// Token stores the API token to authenticate to logz.io with
+	Token string
+	// URL allows users to overwrite the logz.io URL to send logs to. Should include protocol and port (default "https://listener.logz.io:8071/")
+	URL string
+	// UserAgent allows users to overwrite the default HTTP user-agent set for every request (default "logzruz vX.Y.Z - github.com/MorpheusXAUT/logzruz")
+	UserAgent string
 }
 
+// NewHook creates a new logzruz hook using the provided options
 func NewHook(options HookOptions) (*Hook, error) {
 	if len(options.Token) == 0 {
 		return nil, errors.NotValidf("invalid logz.io token")
 	}
 
+	if options.BufferCount < 0 {
+		options.BufferCount = 0
+	} else if options.BufferCount == 0 {
+		options.BufferCount = DefaultBufferCount
+	}
 	if options.BufferInterval.Seconds() <= 0 {
-		options.BufferInterval = time.Second * 10
+		options.BufferInterval = DefaultBufferInterval
 	}
 	if options.Client == nil {
 		options.Client = http.DefaultClient
@@ -88,6 +117,9 @@ func NewHook(options HookOptions) (*Hook, error) {
 	return hook, nil
 }
 
+// Fire is triggered by logrus on every message passed to the hook.
+// The log entry is processed, additional context and data added as required and the JSON encoded payload is added to the message buffer.
+// If the buffer count is reached or a flush is force via log-field or level, the bulk posting is initiated.
 func (hook *Hook) Fire(entry *logrus.Entry) error {
 	data := logrus.Fields{
 		"level":      uint8(entry.Level),
@@ -152,6 +184,8 @@ func (hook *Hook) Fire(entry *logrus.Entry) error {
 	return nil
 }
 
+// Levels returns the levels this hook is triggered on.
+// As of now, logzruz will log every message to logz.io servers.
 func (hook *Hook) Levels() []logrus.Level {
 	return []logrus.Level{
 		logrus.PanicLevel,
@@ -163,6 +197,7 @@ func (hook *Hook) Levels() []logrus.Level {
 	}
 }
 
+// Flush allows applications to force a buffer flash, sending all stored messages to logz.io
 func (hook *Hook) Flush() error {
 	err := hook.flushBuffer()
 	if err != nil {
@@ -172,18 +207,15 @@ func (hook *Hook) Flush() error {
 	return nil
 }
 
+// Shutdown cleanly shuts the hook buffer loop down and flushes all remaining messages
 func (hook *Hook) Shutdown() error {
 	hook.bufferTicker.Stop()
 	hook.stop <- true
 
-	err := hook.flushBuffer()
-	if err != nil {
-		return errors.Annotate(err, "failed to force buffer flush upon shutdown")
-	}
-
-	return nil
+	return hook.Flush()
 }
 
+// flushBuffer combines all buffered messages and sends them to the logz.io bulk POST endpoint
 func (hook *Hook) flushBuffer() error {
 	hook.bufferMutex.Lock()
 	var payload bytes.Buffer
@@ -220,6 +252,7 @@ func (hook *Hook) flushBuffer() error {
 	}
 }
 
+// bufferTickerLoop regularly triggers log flushing so messages do not get lost during low-message periods
 func (hook *Hook) bufferTickerLoop() {
 	for {
 		select {
