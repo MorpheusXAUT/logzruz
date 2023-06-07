@@ -3,8 +3,8 @@ package logzruz
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/Sirupsen/logrus"
 	"github.com/juju/errors"
+	"github.com/sirupsen/logrus"
 	"log"
 	"net/http"
 	"net/url"
